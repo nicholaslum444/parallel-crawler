@@ -1,0 +1,12 @@
+{
+    {
+        'host': 'stackoverflow.com',
+        'path': '/',
+        'response_time': 0
+    },
+    {
+        'host': 'nusmaids.tk',
+        'path': '/login',
+        'response_time': 0
+    }
+}

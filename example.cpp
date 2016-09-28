@@ -175,10 +175,10 @@ int connect(const std::string host, const std::string path) {
 
     status = ::send(m_sock, req.c_str(), req.size(), MSG_NOSIGNAL);
     char buf[MAXRECV];
-
+    
     cout << "Request: " << req << endl;
     cout << "=========================" << endl;
-
+    
     std::string recv = "";
     while (status != 0) {
         memset(buf, 0, MAXRECV);
@@ -232,7 +232,7 @@ int connect(const std::string host, const std::string path) {
 
 int main() {
     cout << "Launching program" << endl;
-    connect("stackoverflow.com", "/");
+    connect("nusmaids.tk", "/login");
     cout << "Done" << endl;
     return 0;
 } // End of the function //
