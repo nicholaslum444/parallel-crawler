@@ -1,2 +1,2 @@
 @ECHO OFF
-g++ -o crawler crawler.cpp -lboost_regex && crawler.exe
+g++ -std=c++11 -o crawler crawler.cpp -lboost_regex && crawler.exe

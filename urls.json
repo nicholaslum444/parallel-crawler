@@ -1,12 +1,19 @@
 {
-    {
-        'host': 'stackoverflow.com',
-        'path': '/',
-        'response_time': 0
-    },
-    {
-        'host': 'nusmaids.tk',
-        'path': '/login',
-        'response_time': 0
-    }
+    urls: [
+        {
+            'host': 'stackoverflow.com',
+            'path': '/',
+            'response_time': -1.0
+        },
+        {
+            'host': 'nuscomputing.com',
+            'path': '/',
+            'response_time': -1.0
+        },
+        {
+            'host': 'nusmaids.tk',
+            'path': '/login',
+            'response_time': -1.0
+        }
+    ]
 }
