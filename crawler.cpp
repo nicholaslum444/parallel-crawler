@@ -13,27 +13,36 @@
 
 #include <boost/algorithm/string.hpp>
 #include <boost/foreach.hpp>
-#include "boost/lexical_cast.hpp"
 
 using namespace std;
 using namespace boost;
-
-typedef std::chrono::high_resolution_clock Clock;
+using namespace std::chrono;
 
 const int PORT = 80;
 const int MAXRECV = 140 * 1024;
 const int DELAY = 2;
+const int MAX_CRAWLS = 20;
 
 class Url {
 public:
     string host;
     string path;
     double response_time;
+    bool crawled;
     
     Url(string h, string p, double rt) {
         host = h;
         path = p;
         response_time = rt;
+        bool crawled = false;
+    }
+    
+    void set_rt(double rt) {
+        response_time = rt;
+    }
+    
+    void set_crawled(bool c) {
+        crawled = c;
     }
     
     string to_string() {
@@ -92,11 +101,11 @@ string receive_response(int sock) {
     return response;
 }
 
-double crawl(string hostname, string path) {
-    chrono::duration<double> rt_nanosec;
+Url* crawl(Url* url) {
+    url->set_crawled(true);
     
-    cout << "Hostname: " << hostname << endl;
-    cout << "Path: " << path << endl;
+    cout << "Hostname: " << url->host << endl;
+    cout << "Path: " << url->path << endl;
     
     // set up socket sock
     int sock;
@@ -105,21 +114,23 @@ double crawl(string hostname, string path) {
     sock = socket(AF_INET, SOCK_STREAM, 0);
     
     // connect to host
-    struct hostent* host_ip = gethostbyname(hostname.c_str());
+    struct hostent* host_ip = gethostbyname(url->host.c_str());
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(PORT);
     server_addr.sin_addr = *((in_addr*)host_ip->h_addr);
     connect(sock, (sockaddr*)&server_addr, sizeof(sockaddr));
     
-    cout << "Connected to " << inet_ntoa(server_addr.sin_addr) << ":" << ntohs(server_addr.sin_port) << endl;
+    cout << "Connected to " << inet_ntoa(server_addr.sin_addr) 
+    << ":" << ntohs(server_addr.sin_port) << endl;
     
-    string request = make_request(hostname, path);
-    auto clock_start = Clock::now();
+    string request = make_request(url->host, url->path);
+    auto clock_start = high_resolution_clock::now();
     int status = send_request(request, sock);
     if (status != 0) {
         string response = receive_response(sock);
-        auto clock_end = Clock::now();
-        rt_nanosec = (clock_end - clock_start);
+        auto clock_end = high_resolution_clock::now();
+        double rt = duration_cast<nanoseconds>(clock_end - clock_start).count();
+        url->set_rt((double)rt/(double)1000000000);
         
         cout << "-----Request Response-----" << endl;
         //cout << response << endl;
@@ -127,16 +138,16 @@ double crawl(string hostname, string path) {
         cout << "------Response End--------" << endl;
         
         cout << "Response Time in Seconds: " 
-            << rt_nanosec.count() << endl;
-         
-        return rt_nanosec.count();
+            << (double)url->response_time << endl;
+        
     } else {
-        return -1.0;
+        url->set_rt(-1.0);
     }
+    return url;
 }
 
-vector<Url> readUrls(string filename) {
-    vector<Url> urls;
+vector<Url*> readUrls(string filename) {
+    vector<Url*> urls;
     // read the file
     string line;
     ifstream urlsfile(filename);
@@ -148,7 +159,7 @@ vector<Url> readUrls(string filename) {
             string rt_str;
             getline(urlsfile, rt_str);
             double response_time = atof(rt_str.c_str());
-            Url url = Url(host, path, response_time);
+            Url* url = new Url(host, path, response_time);
             urls.push_back(url);
         }
         urlsfile.close();
@@ -158,7 +169,7 @@ vector<Url> readUrls(string filename) {
     return urls;
 }
 
-int writeUrls(vector<Url*> urls, string filename) {
+int writeUrls(vector<Url*> &urls, string filename) {
     ofstream urlsfile(filename);
     if (urlsfile.is_open()) {
         BOOST_FOREACH(Url* url, urls) {
@@ -168,26 +179,38 @@ int writeUrls(vector<Url*> urls, string filename) {
     }
 }
 
+int test(Url* url) {
+    url->set_rt(321);
+    cout << url->to_string() << endl;
+}
+
 int main() {
     cout << "Start" << endl;
+    
     cout << "Reading urls" << endl;
-    vector<Url> urls = readUrls("urls.txt");
-    cout << "Done reading urls" << endl;
+    vector<Url*> urls = readUrls("urls.txt");
+    cout << "Done reading urls, there are " << urls.size() 
+        << " urls in the file." << endl;
 
-    // for each url in file, run connect
-    vector<Url*> updated_urls;
-    BOOST_FOREACH(Url url, urls) {
-        cout << "Crawling " << url.host << url.path << endl;
-        double rt = crawl(url.host, url.path);
-        
-        Url* updated_url = new Url(url.host, url.path, rt);
-        updated_urls.push_back(updated_url);
+    int crawled = 0;
+    for (int i = 0; 
+        (crawled < MAX_CRAWLS) && 
+            (crawled < urls.size()) && 
+            (i < urls.size());
+        i++) {
+        Url* url = urls.at(crawled);
+        if (url->crawled) {
+            break;
+        }
+        cout << "Crawling " << url->host << url->path << endl;
+        urls.push_back(crawl(url));
+        crawled++;
         
         cout << "Sleeping for " << DELAY << " seconds" << endl;
         sleep(DELAY);
     }
     
     cout << "Writing urls" << endl;
-    writeUrls(updated_urls, "urls-updated.txt");
+    writeUrls(urls, "urls-updated.txt");
     cout << "Done writing urls" << endl;
 }
