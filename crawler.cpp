@@ -13,6 +13,7 @@
 
 #include <boost/algorithm/string.hpp>
 #include <boost/foreach.hpp>
+#include <boost/regex.hpp>
 
 using namespace std;
 using namespace boost;
@@ -21,28 +22,31 @@ using namespace std::chrono;
 const int PORT = 80;
 const int MAXRECV = 140 * 1024;
 const int DELAY = 2;
-const int MAX_CRAWLS = 20;
+const int MAX_CRAWLS = 50;
 
 class Url {
 public:
     string host;
     string path;
     double response_time;
-    bool crawled;
+    bool accessible;
     
     Url(string h, string p, double rt) {
         host = h;
         path = p;
         response_time = rt;
-        bool crawled = false;
+        accessible = false;
     }
     
     void set_rt(double rt) {
         response_time = rt;
     }
     
-    void set_crawled(bool c) {
-        crawled = c;
+    string get() {
+        string full_url = "";
+        full_url.append(host);
+        full_url.append(path);
+        return full_url;
     }
     
     string to_string() {
@@ -63,6 +67,102 @@ public:
         return ss.str();
     }
 };
+
+Url* parseHref(string orig_host, string str) {
+    const regex re("(?i)http://(.*)/(.*)");
+    smatch what;
+    if (regex_match(str, what, re)) {
+        // We found a full URL, parse out the 'hostname'
+        // Then parse out the page
+        string hostname = what[1];
+        algorithm::to_lower(hostname);
+        string page = what[2];
+        return new Url(hostname, "/" + page, -1);
+    } else {
+        // We could not find the 'page' 
+        // but we can still build the hostname
+        return new Url(orig_host, "/", -1);
+    }
+}
+
+std::string parseHttp(string str) {
+    // first check if it's a https link.
+    // if it is then dont parse it,
+    // just return / so that it's a dead link.
+    const regex re_https("(?i)https://(.*)/?(.*)");
+    smatch what_https;
+    if (regex_match(str, what_https, re_https)) {
+        return "/";
+    }
+    
+    // check if the link has a http
+    // if have http, then likely its another website
+    // get the website hostname, 
+    // or return empty string if dont have
+    const regex re("(?i)http://(.*)/?(.*)");
+    smatch what;
+    if (regex_match(str, what, re)) {
+        string hst = what[1];
+        algorithm::to_lower(hst);
+        return hst;
+    }
+    return "";
+}
+
+Url* parse(string orig_host, string href) {
+    string host = parseHttp(href);
+    string page;
+    Url* new_url;
+    if (!host.empty()) {
+        // If we have a HTTP prefix
+        // We could end up with a 'hostname' and page
+        new_url = parseHref(host, href);
+    } else {
+        // the hostname part is empty or no http prefix
+        // so the page is actually link to the same hostname
+        // the entire href is the page
+        if (href[0] != '/') {
+            href = "/" + href;
+        }
+        new_url = new Url(orig_host, href, -1);
+    }
+    
+    // hostname and page are constructed,
+    // perform post analysis
+    if (new_url->path.length() == 0) {
+        new_url->path = "/";
+    }
+    
+    return new_url;
+}
+
+// returns all urls in the page
+vector<Url*> parse_response(Url* url, string &response) {
+    vector<Url*> new_urls;
+    
+    // remove enters
+    const regex rmv_all("[\\r|\\n]");
+    const string s2 = regex_replace(response, rmv_all, "");
+    const string s = s2;
+    
+    // get all the <a> link tags
+    const regex re("<a\\s+href\\s*=\\s*(\"([^\"]*)\")|('([^']*)')\\s*>");
+    cmatch matches;
+    
+    // iterate through the tokens
+    const int subs[] = {2, 4};
+    sregex_token_iterator i(s.begin(), s.end(), re, subs);
+    sregex_token_iterator j;
+    for (; i != j; i++) {
+        const string href = *i;
+        if (href.length() != 0) {
+            Url* new_url = parse(url->host, href);
+            new_urls.push_back(new_url);
+        }
+    }
+    
+    return new_urls;
+}
 
 string make_request(string hostname, string path) {
     string request = "GET ";
@@ -101,8 +201,8 @@ string receive_response(int sock) {
     return response;
 }
 
-Url* crawl(Url* url) {
-    url->set_crawled(true);
+vector<Url*> crawl(Url* url) {
+    vector<Url*> new_urls;
     
     cout << "Hostname: " << url->host << endl;
     cout << "Path: " << url->path << endl;
@@ -115,13 +215,24 @@ Url* crawl(Url* url) {
     
     // connect to host
     struct hostent* host_ip = gethostbyname(url->host.c_str());
+    cout << "got host ip -----------------------" << endl;
+    if (host_ip == NULL) {
+        cout << "no ip" << endl;
+        url->accessible = false;
+        return vector<Url*>();
+    }
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(PORT);
+    cout << "gonna connect" << endl;
     server_addr.sin_addr = *((in_addr*)host_ip->h_addr);
-    connect(sock, (sockaddr*)&server_addr, sizeof(sockaddr));
+    if (connect(sock, (sockaddr*)&server_addr, sizeof(sockaddr)) != 0) {
+        cout << "cannot connect" << endl;
+        url->accessible = false;
+        return vector<Url*>();
+    }
     
     cout << "Connected to " << inet_ntoa(server_addr.sin_addr) 
-    << ":" << ntohs(server_addr.sin_port) << endl;
+        << ":" << ntohs(server_addr.sin_port) << endl;
     
     string request = make_request(url->host, url->path);
     auto clock_start = high_resolution_clock::now();
@@ -139,11 +250,19 @@ Url* crawl(Url* url) {
         
         cout << "Response Time in Seconds: " 
             << (double)url->response_time << endl;
-        
+            
+        // deal with response
+        // get all the urls in the response
+        new_urls = parse_response(url, response);
+        cout << new_urls.size() << " new urls" << endl;
     } else {
-        url->set_rt(-1.0);
+        url->set_rt(-2.0);
     }
-    return url;
+
+    url->accessible = true;
+    cout << "Sleeping for " << DELAY << " seconds" << endl;
+    sleep(DELAY);
+    return new_urls;
 }
 
 vector<Url*> readUrls(string filename) {
@@ -164,7 +283,7 @@ vector<Url*> readUrls(string filename) {
         }
         urlsfile.close();
     } else {
-        cout << filename << " spoil" << endl;
+        cout << filename << " spoil." << endl;
     }
     return urls;
 }
@@ -172,16 +291,32 @@ vector<Url*> readUrls(string filename) {
 int writeUrls(vector<Url*> &urls, string filename) {
     ofstream urlsfile(filename);
     if (urlsfile.is_open()) {
-        BOOST_FOREACH(Url* url, urls) {
-            urlsfile << url->to_file_output();
+        for(Url* url : urls) {
+            if (url->accessible) {
+                urlsfile << url->to_file_output();
+            }
         }
         urlsfile.close();
     }
 }
 
-int test(Url* url) {
-    url->set_rt(321);
-    cout << url->to_string() << endl;
+bool exists(vector<Url*> &urls, Url* &new_url) {
+    for (Url* url : urls) {
+        if (url->get() == new_url->get()) {
+            cout << url->get() 
+                << " already exists! Not adding..." << endl
+            return true;
+        }
+    }
+    return false;
+}
+
+int add_to(vector<Url*> &urls, vector<Url*> &new_urls) {
+    BOOST_FOREACH(Url* new_url, new_urls) {
+        if (!exists(urls, new_url)) {
+            urls.push_back(new_url);
+        }
+    }
 }
 
 int main() {
@@ -193,21 +328,22 @@ int main() {
         << " urls in the file." << endl;
 
     int crawled = 0;
-    for (int i = 0; 
-        (crawled < MAX_CRAWLS) && 
-            (crawled < urls.size()) && 
-            (i < urls.size());
-        i++) {
-        Url* url = urls.at(crawled);
-        if (url->crawled) {
-            break;
-        }
+    for (int i = 0;
+            (crawled < MAX_CRAWLS) && (i < urls.size());
+            i++) {
+        Url* url = urls.at(i);
         cout << "Crawling " << url->host << url->path << endl;
-        urls.push_back(crawl(url));
-        crawled++;
         
-        cout << "Sleeping for " << DELAY << " seconds" << endl;
-        sleep(DELAY);
+        vector<Url*> new_urls = crawl(url);
+        if (!url->accessible) {
+            cout << "Cannot connect to: " << url->get() << endl;
+        } else {
+            add_to(urls, new_urls);
+            crawled++;
+        }
+        
+        cout << urls.size() << " urls in the queue" << endl;
+        cout << crawled << " / " << MAX_CRAWLS << endl;
     }
     
     cout << "Writing urls" << endl;
